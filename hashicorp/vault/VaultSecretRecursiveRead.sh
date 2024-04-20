@@ -26,31 +26,34 @@ fi
 # Export the Vault token for the session
 export VAULT_TOKEN
 
-# Function to recursively read secrets and output them as JSON
+declare -A secrets_map  # Associate array to hold the paths and data
+
+# Function to recursively read secrets
 read_secrets() {
     local path_to_read=$(echo "secret/$1" | sed 's://*/:/:g')  # Normalize path to avoid double slashes
-    local is_directory=$(vault kv list -format=json "$path_to_read" 2>/dev/null)
 
+    # Attempt to list the path to see if it's a directory
+    local secrets_list=$(vault kv list -format=json "$path_to_read" 2>/dev/null)
     if [ $? -eq 0 ]; then
-        # It's a directory; recurse through the list and build the JSON object
-        local entries=$(echo "$is_directory" | jq -r '.[]')
+        # Directory; recurse through the list
+        local entries=$(echo "$secrets_list" | jq -r '.[]')
         for entry in $entries; do
             read_secrets "$1/$entry"
         done
     else
-        # Attempt to read the path as a single secret
+        # Single secret; attempt to read
         local secret_data=$(vault kv get -format=json "$path_to_read" 2>/dev/null)
         if [ $? -eq 0 ]; then
-            local secret_payload=$(echo "$secret_data" | jq -r '.data.data')
-            if [ "$secret_payload" != "null" ]; then
-                # Output the secret data as JSON
-                echo "\"$path_to_read\": $secret_payload,"
-            fi
+            secrets_map["$path_to_read"]=$(echo "$secret_data" | jq '.data.data')
         fi
     fi
 }
 
-# Wrap the recursive read function calls in a JSON object
-echo "{"
 read_secrets "$PATH_TO_READ"
-echo "}"
+
+# Convert the associative array to a JSON object
+printf "{\n"
+for path in "${!secrets_map[@]}"; do
+    printf "%s\n" "\"$path\": ${secrets_map[$path]}"
+done | sed '$!s/$/,/'  # Add commas except for the last line
+printf "}\n"
